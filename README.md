@@ -349,7 +349,7 @@ Last login: Thu Jun 16 22:07:12 2022 from 10.0.2.2
 update failed: SERVFAIL
 > quit
 ```
-Воспользуемся утилитой audit2why чтобы посмотреть в логах SELinux в чем проблема:
+Ошибка. Воспользуемся утилитой audit2why чтобы посмотреть в логах SELinux в чем проблема:
 ```
 [vagrant@client ~]$ sudo -i
 [root@client ~]# cat /var/log/audit/audit.log | audit2why
@@ -429,7 +429,16 @@ type=AVC msg=audit(1655418597.104:69): avc:  denied  { write } for  pid=890 comm
 ```
 [root@ns01 ~]# setsebool -P named_write_master_zones 1
 ```
-Снова вносим изменения на клиенте с указанием сервера:
+Снова вносим изменения на клиенте:
+```
+[vagrant@client ~]$ nsupdate -k /etc/named.zonetransfer.key
+> server 192.168.50.10
+> zone ddns.lab
+> update add www.ddns.lab. 60 A 192.168.50.15
+> send
+> quit
+```
+Ошибки нет. Проверяем через dns клиент с указанием сервера:
 ```
 [vagrant@client ~]$ dig www.ddns.lab @192.168.50.10
 
