@@ -403,6 +403,123 @@ drw-rwx---. root named unconfined_u:object_r:named_zone_t:s0 dynamic
 ```
 named_zone_t - Изменения применились. Снова вносим изменения на клиенте:
 ```
+[vagrant@client ~]$ nsupdate -k /etc/named.zonetransfer.key
+> server 192.168.50.10
+> zone ddns.lab
+> update add www.ddns.lab. 60 A 192.168.50.15
+> send
+update failed: SERVFAIL
+> quit
+```
+Снова ошибка. В логе на клиенте пусто, смотрим на сервере:
+```
+[root@ns01 ~]# cat /var/log/audit/audit.log | audit2why
+
+type=AVC msg=audit(1655418597.104:69): avc:  denied  { write } for  pid=890 comm="isc-worker0000" name="dynamic" dev="dm-0" ino=100672938 scontext=system_u:system_r:named_t:s0 tcontext=unconfined_u:object_r:named_zone_t:s0 tclass=dir
+
+        Was caused by:
+        The boolean named_write_master_zones was set incorrectly.
+        Description:
+        Allow named to write master zones
+
+        Allow access by executing:
+        # setsebool -P named_write_master_zones 1
+```
+Исходя из вывода утилиты, требуется поменять параметр named_write_master_zones:
+```
+[root@ns01 ~]# setsebool -P named_write_master_zones 1
+```
+Снова вносим изменения на клиенте с указанием сервера:
+```
+[vagrant@client ~]$ dig www.ddns.lab @192.168.50.10
+
+; <<>> DiG 9.11.4-P2-RedHat-9.11.4-26.P2.el7_9.9 <<>> www.ddns.lab @192.168.50.10
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 58128
+;; flags: qr aa rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 1, ADDITIONAL: 2
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4096
+;; QUESTION SECTION:
+;www.ddns.lab.                  IN      A
+
+;; ANSWER SECTION:
+www.ddns.lab.           60      IN      A       192.168.50.15
+
+;; AUTHORITY SECTION:
+ddns.lab.               3600    IN      NS      ns01.dns.lab.
+
+;; ADDITIONAL SECTION:
+ns01.dns.lab.           3600    IN      A       192.168.50.10
+
+;; Query time: 1 msec
+;; SERVER: 192.168.50.10#53(192.168.50.10)
+;; WHEN: Thu Jun 16 23:26:58 UTC 2022
+;; MSG SIZE  rcvd: 96
+```
+Видим, что изменения применились. Попробуем перезагрузить хосты и ещё раз сделать запрос с помощью dig:
+```
+[vagrant@client ~]$ sudo -i
+[root@client ~]# reboot
+Connection to 127.0.0.1 closed by remote host.
+Connection to 127.0.0.1 closed.
+
+[root@ns01 ~]# reboot
+Connection to 127.0.0.1 closed by remote host.
+Connection to 127.0.0.1 closed.
+
+
+sam@yarkozloff:/otus/selinux/otus-linux-adm/selinux_dns_problems$ vagrant ssh client
+Last login: Thu Jun 16 23:17:18 2022 from 10.0.2.2
+###############################
+### Welcome to the DNS lab! ###
+###############################
+
+- Use this client to test the enviroment
+- with dig or nslookup. Ex:
+    dig @192.168.50.10 ns01.dns.lab
+
+- nsupdate is available in the ddns.lab zone. Ex:
+    nsupdate -k /etc/named.zonetransfer.key
+    server 192.168.50.10
+    zone ddns.lab
+    update add www.ddns.lab. 60 A 192.168.50.15
+    send
+
+- rndc is also available to manage the servers
+    rndc -c ~/rndc.conf reload
+
+###############################
+### Enjoy! ####################
+###############################
+[vagrant@client ~]$ dig www.ddns.lab @192.168.50.10
+
+; <<>> DiG 9.11.4-P2-RedHat-9.11.4-26.P2.el7_9.9 <<>> www.ddns.lab @192.168.50.10
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 8951
+;; flags: qr aa rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 1, ADDITIONAL: 2
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4096
+;; QUESTION SECTION:
+;www.ddns.lab.                  IN      A
+
+;; ANSWER SECTION:
+www.ddns.lab.           60      IN      A       192.168.50.15
+
+;; AUTHORITY SECTION:
+ddns.lab.               3600    IN      NS      ns01.dns.lab.
+
+;; ADDITIONAL SECTION:
+ns01.dns.lab.           3600    IN      A       192.168.50.10
+
+;; Query time: 48 msec
+;; SERVER: 192.168.50.10#53(192.168.50.10)
+;; WHEN: Thu Jun 16 23:30:56 UTC 2022
+;; MSG SIZE  rcvd: 96
 
 ```
-
+Всё правильно. После перезагрузки настройки сохранились. Для того, чтобы вернуть правила обратно, можно ввести команду:
+restorecon -v -R /etc/named
