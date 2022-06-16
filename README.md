@@ -102,7 +102,7 @@ Hint: Some lines were ellipsized, use -l to show in full.
 Заходим на сервер: vagrant ssh
 Дальнейшие действия выполняются от пользователя root. Переходим в root пользователя: sudo -i
 
-## Запуск nginx на нестандартном порту 3-мя разными способами
+## 1. Запуск nginx на нестандартном порту 3-мя разными способами
 Для начала проверим, что в ОС отключен файервол: 
 ```
 [root@selinux ~]# systemctl status firewalld
@@ -124,7 +124,7 @@ Enforcing
 ```
 Данный режим означает, что SELinux будет блокировать запрещенную активность.
 
-### 1. Разрешим в SELinux работу nginx на порту TCP 4881 c помощью переключателей setsebool
+### 1.1. Разрешим в SELinux работу nginx на порту TCP 4881 c помощью переключателей setsebool
 Находим в логах информацию о блокировании порта:
 ```
 [root@selinux ~]# cat /var/log/audit/audit.log | grep 4881
@@ -195,7 +195,7 @@ Job for nginx.service failed because the control process exited with error code.
   Process: 2623 ExecStartPre=/usr/sbin/nginx -t (code=exited, status=1/FAILURE)
   ...
 ```
-### 2. Разрешим в SELinux работу nginx на порту TCP 4881 c помощью добавления нестандартного порта в имеющийся тип
+### 1.2. Разрешим в SELinux работу nginx на порту TCP 4881 c помощью добавления нестандартного порта в имеющийся тип
 Поиск имеющегося типа, для http трафика:
 ```
 [root@selinux ~]# semanage port -l | grep http
@@ -233,7 +233,7 @@ Job for nginx.service failed because the control process exited with error code.
 curl: (7) Failed connect to localhost:4881; Connection refused
 ```
 
-### 3. Разрешим в SELinux работу nginx на порту TCP 4881 c помощью формирования и установки модуля SELinux:
+### 1.3. Разрешим в SELinux работу nginx на порту TCP 4881 c помощью формирования и установки модуля SELinux:
 Воспользуемся утилитой audit2allow для того, чтобы на основе логов SELinux сделать модуль, разрешающий работу nginx на нестандартном порту:
 ```
 [root@selinux ~]# curl -a http://localhost:4881
@@ -259,4 +259,150 @@ Audit2allow сообщил команду, с помощью которой мо
 Просмотр всех установленных модулей: semodule -l
 Для удаления модуля воспользуемся командой: semodule -r nginx
 
-## 
+## 2. Обеспечить работоспособность приложения при включенном selinux.
+Подготовка окружения. Потребуется Ansible и Git.
+Git уже есть. Обновим Ansible, проверим версию:
+```
+sam@yarkozloff:/otus/selinux2$ ansible --version
+ansible [core 2.12.4]
+  config file = /etc/ansible/ansible.cfg
+  configured module search path = ['/home/sam/.ansible/plugins/modules', '/usr/share/ansible/plugins/modules']
+  ansible python module location = /usr/lib/python3/dist-packages/ansible
+  ansible collection location = /home/sam/.ansible/collections:/usr/share/ansible/collections
+  executable location = /usr/bin/ansible
+  python version = 3.8.10 (default, Mar 15 2022, 12:22:08) [GCC 9.4.0]
+  jinja version = 2.10.1
+  libyaml = True
+```
+Клонируем репозиторий:
+```
+sam@yarkozloff:/otus/selinux$ git clone https://github.com/mbfx/otus-linux-adm.git
+Cloning into 'otus-linux-adm'...
+remote: Enumerating objects: 542, done.
+remote: Counting objects: 100% (440/440), done.
+remote: Compressing objects: 100% (295/295), done.
+remote: Total 542 (delta 118), reused 381 (delta 69), pack-reused 102
+Receiving objects: 100% (542/542), 1.38 MiB | 549.00 KiB/s, done.
+Resolving deltas: 100% (133/133), done.
+```
+Отредактируем Vagrantfile (чтобы использовать локальный бокс):
+```
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure(2) do |config|
+  config.vm.box = "centos7"
+
+  config.vm.provision "ansible" do |ansible|
+    #ansible.verbose = "vvv"
+    ansible.playbook = "provisioning/playbook.yml"
+    ansible.become = "true"
+  end
+
+  config.vm.provider "virtualbox" do |v|
+	  v.memory = 256
+  end
+
+  config.vm.define "ns01" do |ns01|
+    ns01.vm.network "private_network", ip: "192.168.50.10", virtualbox__intnet: "dns"
+    ns01.vm.hostname = "ns01"
+  end
+
+  config.vm.define "client" do |client|
+    client.vm.network "private_network", ip: "192.168.50.15", virtualbox__intnet: "dns"
+    client.vm.hostname = "client"
+  end
+
+end
+```
+Переходим в нужный каталог, поднимаем стенды (пришлось подождать чуть дольше), проверяем:
+```
+sam@yarkozloff:/otus/selinux$ cd otus-linux-adm/selinux_dns_problems
+sam@yarkozloff:/otus/selinux/otus-linux-adm/selinux_dns_problems$ vagrant up
+sam@yarkozloff:/otus/selinux/otus-linux-adm/selinux_dns_problems$ vagrant status
+Current machine states:
+
+ns01                      running (virtualbox)
+client                    running (virtualbox)
+
+This environment represents multiple VMs. The VMs are all listed
+above with their current state. For more information about a specific
+VM, run `vagrant status NAME`.
+```
+Подключаемся к клиенту:
+```
+sam@yarkozloff:/otus/selinux/otus-linux-adm/selinux_dns_problems$ vagrant ssh client
+Last login: Thu Jun 16 22:07:12 2022 from 10.0.2.2
+###############################
+### Welcome to the DNS lab! ###
+###############################
+```
+Попробуем внести изменения в зону:
+```
+[vagrant@client ~]$ nsupdate -k /etc/named.zonetransfer.key
+> ^C[vagrant@client ~]$ ^C
+[vagrant@client ~]$ nsupdate -k /etc/named.zonetransfer.key
+> server 192.168.50.10
+> zone ddns.lab
+> update add www.ddns.lab. 60 A 192.168.50.15
+> send
+update failed: SERVFAIL
+> quit
+```
+Воспользуемся утилитой audit2why чтобы посмотреть в логах SELinux в чем проблема:
+```
+[vagrant@client ~]$ sudo -i
+[root@client ~]# cat /var/log/audit/audit.log | audit2why
+[root@client ~]#
+```
+Тут мы видим, что на клиенте отсутствуют ошибки.
+Подключимся к серверу ns01 и проверим логи SELinux:
+```
+sam@yarkozloff:~$ cd /otus/selinux/otus-linux-adm/selinux_dns_problems/
+sam@yarkozloff:/otus/selinux/otus-linux-adm/selinux_dns_problems$ vagrant ssh ns01
+Last login: Thu Jun 16 22:03:04 2022 from 10.0.2.2
+[vagrant@ns01 ~]$ sudo -i
+[root@ns01 ~]# cat /var/log/audit/audit.log | audit2why
+type=AVC msg=audit(1655416985.410:1761): avc:  denied  { search } for  pid=5451 comm="isc-worker0000" name="net" dev="proc" ino=29143 scontext=system_u:system_r:named_t:s0 tcontext=system_u:object_r:sysctl_net_t:s0 tclass=dir
+
+        Was caused by:
+                Missing type enforcement (TE) allow rule.
+
+                You can use audit2allow to generate a loadable module to allow this access.
+```
+В логах мы видим, что ошибка в контексте безопасности. Вместо типа named_t используется тип etc_t. 
+Проверим данную проблему в каталоге /etc/named
+```
+[root@ns01 ~]# ls -laZ /etc/named
+drw-rwx---. root named system_u:object_r:etc_t:s0       .
+drwxr-xr-x. root root  system_u:object_r:etc_t:s0       ..
+drw-rwx---. root named unconfined_u:object_r:etc_t:s0   dynamic
+-rw-rw----. root named system_u:object_r:etc_t:s0       named.50.168.192.rev
+-rw-rw----. root named system_u:object_r:etc_t:s0       named.dns.lab
+-rw-rw----. root named system_u:object_r:etc_t:s0       named.dns.lab.view1
+-rw-rw----. root named system_u:object_r:etc_t:s0       named.newdns.lab
+```
+etc_t - контекст безопасности неправильный. Конфигурационные файлы лежат в другом каталоге. Посмотреть в каком каталоги должны лежать, файлы, чтобы на них
+распространялись правильные политики SELinux можно с помощью команды:
+```
+[root@ns01 ~]# semanage fcontext -l | grep named
+/etc/rndc.*                                        regular file       system_u:object_r:named_conf_t:s0
+/var/named(/.*)?                                   all files          system_u:object_r:named_zone_t:s0
+```
+Изменим тип контекста безопасности для каталога /etc/named:
+```
+[root@ns01 ~]# chcon -R -t named_zone_t /etc/named
+[root@ns01 ~]# ls -laZ /etc/named
+drw-rwx---. root named system_u:object_r:named_zone_t:s0 .
+drwxr-xr-x. root root  system_u:object_r:etc_t:s0       ..
+drw-rwx---. root named unconfined_u:object_r:named_zone_t:s0 dynamic
+-rw-rw----. root named system_u:object_r:named_zone_t:s0 named.50.168.192.rev
+-rw-rw----. root named system_u:object_r:named_zone_t:s0 named.dns.lab
+-rw-rw----. root named system_u:object_r:named_zone_t:s0 named.dns.lab.view1
+-rw-rw----. root named system_u:object_r:named_zone_t:s0 named.newdns.lab
+```
+named_zone_t - Изменения применились. Снова вносим изменения на клиенте:
+```
+
+```
+
