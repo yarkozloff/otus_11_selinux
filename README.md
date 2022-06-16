@@ -144,7 +144,7 @@ type=AVC msg=audit(1655409955.224:792): avc:  denied  { name_bind } for  pid=309
         Allow access by executing:
         # setsebool -P nis_enabled 1
 ```
-Исходя из вывода утилиты, мы видим, что нам нужно поменять параметр nis_enabled
+Исходя из вывода утилиты, мы видим, что нам нужно поменять параметр nis_enabled.
 Включим параметр nis_enabled и перезапустим nginx: setsebool -P nis_enabled on (немного подождать):
 ```
 [root@selinux ~]# setsebool -P nis_enabled on
