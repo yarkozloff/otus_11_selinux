@@ -21,7 +21,7 @@ README с анализом причины неработоспособности
 для задания 2 предложено более одного способа решения;
 для задания 2 обоснованно(!) выбран один из способов решения.
 
-## Пошаговая инструкция выполнения домашнего задания:
+# Пошаговая инструкция выполнения домашнего задания:
 В связи с недоступностью Vagrant cloud, бокс centos/7 был загружен локально на виртуальную машину с Ubuntu 20.04.3 как это и делалось ранее. Сам бокс дополнительно сохранил сохранил на диск: https://disk.yandex.ru/d/6FxLl6u6ILFMgQ
 Далее добавил бокс:
 ```
@@ -51,6 +51,8 @@ Vagrant.configure("2") do |config|
       box.vm.provision "shell", inline: <<-SHELL
         #install epel-release
         yum install -y epel-release
+        #install policycoreutils-python for audit2why
+        yum install -y policycoreutils-python
         #install nginx
         yum install -y nginx
         #change nginx port
@@ -69,3 +71,126 @@ Vagrant.configure("2") do |config|
   end
 end
 ```
+Результатом выполнения команды vagrant up станет созданная виртуальная машина с установленным nginx, который работает на порту TCP 4881. Порт TCP 4881 уже проброшен до хоста. SELinux включен.
+Заходим на стенд и проверяем статус nginx:
+```
+sam@yarkozloff:/otus/selinux$ vagrant ssh
+Last login: Thu Jun 16 21:02:58 2022 from 10.0.2.2
+[vagrant@selinux ~]$ sudo systemctl start nginx
+Job for nginx.service failed because the control process exited with error code. See "systemctl status nginx.service" and "journalctl -xe" for details.
+[vagrant@selinux ~]$ sudo systemctl status nginx
+● nginx.service - The nginx HTTP and reverse proxy server
+   Loaded: loaded (/usr/lib/systemd/system/nginx.service; enabled; vendor preset: disabled)
+   Active: failed (Result: exit-code) since Thu 2022-06-16 21:03:26 UTC; 11s ago
+  Process: 2269 ExecStartPre=/usr/sbin/nginx -t (code=exited, status=1/FAILURE)
+  Process: 2267 ExecStartPre=/usr/bin/rm -f /run/nginx.pid (code=exited, status=0/SUCCESS)
+
+Jun 16 21:03:26 selinux systemd[1]: Starting The nginx HTTP and reverse proxy server...
+Jun 16 21:03:26 selinux nginx[2269]: nginx: the configuration file /etc/nginx/nginx.conf synt...s ok
+Jun 16 21:03:26 selinux nginx[2269]: nginx: [emerg] bind() to [::]:4881 failed (13: Permissio...ied)
+Jun 16 21:03:26 selinux nginx[2269]: nginx: configuration file /etc/nginx/nginx.conf test failed
+Jun 16 21:03:26 selinux systemd[1]: nginx.service: control process exited, code=exited status=1
+Jun 16 21:03:26 selinux systemd[1]: Failed to start The nginx HTTP and reverse proxy server.
+Jun 16 21:03:26 selinux systemd[1]: Unit nginx.service entered failed state.
+Jun 16 21:03:26 selinux systemd[1]: nginx.service failed.
+Hint: Some lines were ellipsized, use -l to show in full.
+```
+Данная ошибка появляется из-за того, что SELinux блокирует работу nginx на нестандартном порту.
+Заходим на сервер: vagrant ssh
+Дальнейшие действия выполняются от пользователя root. Переходим в root пользователя: sudo -i
+
+## Запуск nginx на нестандартном порту 3-мя разными способами
+Для начала проверим, что в ОС отключен файервол: 
+```
+[root@selinux ~]# systemctl status firewalld
+● firewalld.service - firewalld - dynamic firewall daemon
+   Loaded: loaded (/usr/lib/systemd/system/firewalld.service; disabled; vendor preset: enabled)
+   Active: inactive (dead)
+     Docs: man:firewalld(1)
+```
+Конфигурация nginx настроена без ошибок:
+```
+[root@selinux ~]# nginx -t
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+```
+Режим работы SELinux:
+```
+[root@selinux ~]#  getenforce
+Enforcing
+```
+Данный режим означает, что SELinux будет блокировать запрещенную активность.
+
+### 1. Разрешим в SELinux работу nginx на порту TCP 4881 c помощью переключателей setsebool
+Находим в логах информацию о блокировании порта:
+```
+[root@selinux ~]# cat /var/log/audit/audit.log | grep 4881
+type=AVC msg=audit(1655409955.224:792): avc:  denied  { name_bind } for  pid=3094 comm="nginx" src=4881 scontext=system_u:system_r:httpd_t:s0 tcontext=system_u:object_r:unreserved_port_t:s0 tclass=tcp_socket
+```
+Копируем время, в которое был записан этот лог, и, с помощью утилиты audit2why смотрим информации о запрете. 
+Но для этого нужна сама утилита, на стенде её не оказалось поэтому нужно доставить policycoreutils-python (добавил его установку в скрипте в Vagrantfile):
+```
+[root@selinux ~]# grep 1655409955.224:792 /var/log/audit/audit.log | audit2why
+type=AVC msg=audit(1655409955.224:792): avc:  denied  { name_bind } for  pid=3094 comm="nginx" src=4881 scontext=system_u:system_r:httpd_t:s0 tcontext=system_u:object_r:unreserved_port_t:s0 tclass=tcp_socket
+
+        Was caused by:
+        The boolean nis_enabled was set incorrectly.
+        Description:
+        Allow nis to enabled
+
+        Allow access by executing:
+        # setsebool -P nis_enabled 1
+```
+Исходя из вывода утилиты, мы видим, что нам нужно поменять параметр nis_enabled
+Включим параметр nis_enabled и перезапустим nginx: setsebool -P nis_enabled on (немного подождать):
+```
+[root@selinux ~]# setsebool -P nis_enabled on
+[root@selinux ~]# systemctl restart nginx
+[root@selinux ~]# systemctl status nginx
+● nginx.service - The nginx HTTP and reverse proxy server
+   Loaded: loaded (/usr/lib/systemd/system/nginx.service; enabled; vendor preset: disabled)
+   Active: active (running) since Thu 2022-06-16 21:18:56 UTC; 5s ago
+  Process: 2598 ExecStart=/usr/sbin/nginx (code=exited, status=0/SUCCESS)
+  Process: 2596 ExecStartPre=/usr/sbin/nginx -t (code=exited, status=0/SUCCESS)
+  Process: 2595 ExecStartPre=/usr/bin/rm -f /run/nginx.pid (code=exited, status=0/SUCCESS)
+ Main PID: 2600 (nginx)
+   CGroup: /system.slice/nginx.service
+           ├─2600 nginx: master process /usr/sbin/nginx
+           └─2602 nginx: worker process
+
+Jun 16 21:18:56 selinux systemd[1]: Starting The nginx HTTP and reverse proxy server...
+Jun 16 21:18:56 selinux nginx[2596]: nginx: the configuration file /etc/nginx/nginx.conf synt...s ok
+Jun 16 21:18:56 selinux nginx[2596]: nginx: configuration file /etc/nginx/nginx.conf test is ...sful
+Jun 16 21:18:56 selinux systemd[1]: Started The nginx HTTP and reverse proxy server.
+```
+Проверяем curl-ом, что страница выдаётся:
+```
+[root@selinux ~]# curl -a http://localhost:4881
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+  <title>Welcome to CentOS</title>
+       ...
+       ...
+```
+Проверяем статус параметра командой:
+```
+[root@selinux ~]#  getsebool -a | grep nis_enabled
+nis_enabled --> on
+```
+Вернём запрет работы nginx на порту 4881 обратно. Для этого отключим nis_enabled. 
+После отключения nis_enabled служба nginx снова не запустится.
+```
+[root@selinux ~]# setsebool -P nis_enabled off
+[root@selinux ~]# systemctl restart nginx
+Job for nginx.service failed because the control process exited with error code. See "systemctl status nginx.service" and "journalctl -xe" for details.
+[root@selinux ~]# systemctl status nginx
+● nginx.service - The nginx HTTP and reverse proxy server
+   Loaded: loaded (/usr/lib/systemd/system/nginx.service; enabled; vendor preset: disabled)
+   Active: failed (Result: exit-code) since Thu 2022-06-16 21:22:32 UTC; 2s ago
+  Process: 2598 ExecStart=/usr/sbin/nginx (code=exited, status=0/SUCCESS)
+  Process: 2623 ExecStartPre=/usr/sbin/nginx -t (code=exited, status=1/FAILURE)
+  ...
+```
+
+
