@@ -1,18 +1,21 @@
 # Практика работы с SELinux
+
 ## Описание
-Запустить nginx на нестандартном порту 3-мя разными способами:
-переключатели setsebool;
-добавление нестандартного порта в имеющийся тип;
-формирование и установка модуля SELinux. К сдаче:
-README с описанием каждого решения (скриншоты и демонстрация приветствуются).
-Обеспечить работоспособность приложения при включенном selinux.
-развернуть приложенный стенд https://github.com/mbfx/otus-linux-adm/tree/master/selinux_dns_problems;
-выяснить причину неработоспособности механизма обновления зоны (см. README);
-предложить решение (или решения) для данной проблемы;
-выбрать одно из решений для реализации, предварительно обосновав выбор;
-реализовать выбранное решение и продемонстрировать его работоспособность. К сдаче:
-README с анализом причины неработоспособности, возможными способами решения и обоснованием выбора одного из них;
-исправленный стенд или демонстрация работоспособной системы скриншотами и описанием.
+  1. Запустить nginx на нестандартном порту 3-мя разными способами:
+    переключатели setsebool;
+    добавление нестандартного порта в имеющийся тип;
+    формирование и установка модуля SELinux. К сдаче:
+    README с описанием каждого решения (скриншоты и демонстрация приветствуются).
+
+  2. Обеспечить работоспособность приложения при включенном selinux.
+    развернуть приложенный стенд https://github.com/mbfx/otus-linux-adm/tree/master/selinux_dns_problems;
+    выяснить причину неработоспособности механизма обновления зоны (см. README);
+    предложить решение (или решения) для данной проблемы;
+    выбрать одно из решений для реализации, предварительно обосновав выбор;
+    реализовать выбранное решение и продемонстрировать его работоспособность. К сдаче:
+    README с анализом причины неработоспособности, возможными способами решения и обоснованием выбора одного из них;
+    исправленный стенд или демонстрация работоспособной системы скриншотами и описанием.
+
 ### Критерии оценки:
 Статус "Принято" ставится при выполнении следующих условий:
 для задания 1 описаны, реализованы и продемонстрированы все 3 способа решения;
@@ -192,5 +195,68 @@ Job for nginx.service failed because the control process exited with error code.
   Process: 2623 ExecStartPre=/usr/sbin/nginx -t (code=exited, status=1/FAILURE)
   ...
 ```
+### 2. Разрешим в SELinux работу nginx на порту TCP 4881 c помощью добавления нестандартного порта в имеющийся тип
+Поиск имеющегося типа, для http трафика:
+```
+[root@selinux ~]# semanage port -l | grep http
+http_cache_port_t              tcp      8080, 8118, 8123, 10001-10010
+http_cache_port_t              udp      3130
+http_port_t                    tcp      80, 81, 443, 488, 8008, 8009, 8443, 9000
+pegasus_http_port_t            tcp      5988
+pegasus_https_port_t           tcp      5989
+```
+Добавим порт в тип http_port_t:
+```
+[root@selinux ~]# semanage port -a -t http_port_t -p tcp 4881
+```
+Запускаем nging, проверяем работу:
+```
+[root@selinux ~]# systemctl restart nginx
+[root@selinux ~]# curl -a http://localhost:4881
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+  <title>Welcome to CentOS</title>
+  ...
+```
+Удаляем нестандартный порт из имеющегося типа и проверяем, что nginx не работает:
+```
+[root@selinux ~]# semanage port -d -t http_port_t -p tcp 4881
+[root@selinux ~]# systemctl restart nginx
+Job for nginx.service failed because the control process exited with error code. See "systemctl status nginx.service" and "journalctl -xe" for details.
+[root@selinux ~]# systemctl status nginx
+● nginx.service - The nginx HTTP and reverse proxy server
+   Loaded: loaded (/usr/lib/systemd/system/nginx.service; enabled; vendor preset: disabled)
+   Active: failed (Result: exit-code) since Thu 2022-06-16 21:27:30 UTC; 8s ago
+   ...
+[root@selinux ~]# curl -a http://localhost:4881
+curl: (7) Failed connect to localhost:4881; Connection refused
+```
 
+### 3. Разрешим в SELinux работу nginx на порту TCP 4881 c помощью формирования и установки модуля SELinux:
+Воспользуемся утилитой audit2allow для того, чтобы на основе логов SELinux сделать модуль, разрешающий работу nginx на нестандартном порту:
+```
+[root@selinux ~]# curl -a http://localhost:4881
+curl: (7) Failed connect to localhost:4881; Connection refused
+[root@selinux ~]# grep nginx /var/log/audit/audit.log | audit2allow -M nginx
+******************** IMPORTANT ***********************
+To make this policy package active, execute:
 
+semodule -i nginx.pp
+```
+Audit2allow сообщил команду, с помощью которой можно применить сформированный модуль. Запускаем и проверяем nginx:
+```
+[root@selinux ~]# semodule -i nginx.pp
+[root@selinux ~]# systemctl restart nginx
+[root@selinux ~]# curl -a http://localhost:4881
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+  <title>Welcome to CentOS</title>
+...
+```
+После добавления модуля nginx запустился без ошибок. При использовании модуля изменения сохранятся после перезагрузки.
+Просмотр всех установленных модулей: semodule -l
+Для удаления модуля воспользуемся командой: semodule -r nginx
+
+## 
